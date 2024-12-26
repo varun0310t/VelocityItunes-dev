@@ -33,9 +33,7 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, top
 
 # Loop to continuously get recommendations
 while True:
-    index = int(input("Enter a track name (or type 'exit' to quit): "))
+    index = int(input("Enter a index of song: "))
     query_song=y_train.iloc[index]['track_name']
-    if query_song.lower() == 'exit':
-        break
     recommendations = recommend_songs(query_song, x_train_encoded, y_train, similarity_matrix)
     print(f"Recommended songs for '{query_song}': {recommendations}")
