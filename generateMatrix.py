@@ -1,11 +1,16 @@
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
+import os
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity  # Add this import
+import gc  # Add garbage collector import
+from tqdm import tqdm  # Add for progress bar
+
 """Importing Dataset"""
-dataset_path = './spotify_songs.csv'
+dataset_path = './data.csv'
 
 df = pd.read_csv(dataset_path)
 
@@ -28,36 +33,13 @@ plt.xlabel('Tempo')
 plt.ylabel('Frequency')
 plt.show()
 
-plt.figure(figsize=(8, 6))
-sns.histplot(df['playlist_genre'], kde=True, color='blue')
-plt.title('Distribution of playlist genre')
-plt.xlabel('Playlist Genre')
-plt.ylabel('Frequency')
-plt.show()
-
-df.isnull().sum()
-
-df['lyrics'] = df['lyrics'].fillna("No lyrics available")
-
-df['language'] = df['language'].fillna(df['language'].mode()[0])
-
 df.isnull().sum()
 
 df.duplicated().sum()
 
-df['playlist_genre'].unique()
-
-from sklearn.preprocessing import OneHotEncoder
-encoder = OneHotEncoder(sparse_output=False)
-encoded_playlist_genre = encoder.fit_transform(df[['playlist_genre']])
-
-encoded_df = pd.DataFrame(encoded_playlist_genre, columns=encoder.get_feature_names_out())
-encoded_df.head()
-
-#Splitting the Dataset
-
-x = df[['tempo','valence','instrumentalness','energy','mode','acousticness','speechiness','key','loudness','playlist_genre','playlist_subgenre','playlist_name','track_album_name','track_artist','lyrics']]
-y = df['track_name']
+x = df[['tempo', 'valence', 'instrumentalness', 'energy', 'mode', 
+        'acousticness', 'speechiness', 'key', 'loudness', 'artists']]
+y = df['name']
 
 x = pd.DataFrame(x)
 x.head()
@@ -82,15 +64,15 @@ y_test.shape
 
 #Scaling
 
-from sklearn.preprocessing import MinMaxScaler
 scaler = MinMaxScaler()
-df_scaled = scaler.fit_transform(df[['tempo', 'valence', 'energy','mode']])
-df_scaled = pd.DataFrame(df_scaled, columns=['tempo_scaled', 'valence_scaled', 'energy_scaled','mode_scaled'])
+numeric_features = ['tempo', 'valence', 'energy', 'mode', 'acousticness', 
+                   'danceability', 'instrumentalness', 'liveness', 'loudness']
+df_scaled = scaler.fit_transform(df[numeric_features])
+df_scaled = pd.DataFrame(df_scaled, columns=[f'{col}_scaled' for col in numeric_features])
 
 df_scaled
 
-c = pd.concat([df_scaled,encoded_df], axis=1)
-c.head()
+c = df_scaled
 
 from sklearn.cluster import KMeans
 wcss = []
@@ -145,55 +127,11 @@ x_test.head(5)
 
 y_train.head(5)
 
-x_train_encoded =x_train
+x_train_encoded = x_train.drop(['artists'], axis=1)  # Remove artists column instead of encoding it
 
-categorical_columns = ['playlist_genre', 'playlist_subgenre', 'playlist_name', 'track_album_name', 'track_artist']
-encoder = OneHotEncoder(sparse_output=False)
-encoded_data = encoder.fit_transform(x_train_encoded[categorical_columns])
-encoded_df = pd.DataFrame(encoded_data, columns=encoder.get_feature_names_out(categorical_columns))
-x_train_encoded = x_train_encoded.drop(categorical_columns, axis=1)
-x_train_encoded= pd.concat([x_train_encoded.reset_index(drop=True), encoded_df.reset_index(drop=True)], axis=1)
-
-x_train_encoded.head()
-
-df_lyrics= x_train['lyrics']
-df_lyrics
-
-df_lyrics.str.lower().replace(r'^\w\s', '', regex= True).replace(r'\n', '', regex = True).replace(r'\r', '', regex = True)
-
-import nltk
-from nltk.stem.porter import PorterStemmer
-nltk.download('punkt_tab')
-
-stemmer = PorterStemmer()
-def token(txt):
-  token= nltk.word_tokenize(txt)
-  a = [stemmer.stem(w) for w in token]
-  return " ".join(a)
-
-df_lyrics.apply(lambda x: token(x))
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import StandardScaler
-
-tfid= TfidfVectorizer(analyzer='word')
-lyrics_matrix = tfid.fit_transform(df_lyrics)
-
-similar = cosine_similarity(lyrics_matrix)
-
-similar[0]
-
-x_train_encoded['lyrics']= similar
-x_train_encoded.head(5)
-
-x_train_encoded['lyrics'].head()
-
-x_train_encoded.shape
-
-print(x_train_encoded.columns)
-
-columns_to_scale = ['tempo','key', 'loudness','valence','instrumentalness','energy','mode','acousticness','speechiness']
+columns_to_scale = ['tempo', 'key', 'loudness', 'valence',
+                    'instrumentalness', 'energy', 'mode', 'acousticness',
+                    'speechiness']
 
 scaler = MinMaxScaler()
 x_train_encoded[columns_to_scale] = scaler.fit_transform(x_train_encoded[columns_to_scale])
@@ -208,43 +146,76 @@ features = list(x_train_encoded.columns)
 
 from sklearn.decomposition import PCA
 
-pca = PCA(n_components=50)
+# Calculate number of components based on available features
+n_components = min(len(features), 10)  # Use minimum of feature count or 10
+pca = PCA(n_components=n_components)
 x_train_reduced = pca.fit_transform(x_train_encoded)
 
-x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(50)])
+x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(n_components)])
 
+def calculate_similarity_in_batches(features_matrix, batch_size=200):  # Increased batch size
+    n_samples = features_matrix.shape[0]
+    filename = 'temp_similarity.npy'
+    
+    # Create memory-mapped file
+    similarity_matrix = np.memmap(filename, dtype='float32', mode='w+', shape=(n_samples, n_samples))
+    
+    try:
+        # Add progress bar
+        pbar = tqdm(total=n_samples, desc="Processing rows")
+        for i in range(0, n_samples, batch_size):
+            end_i = min(i + batch_size, n_samples)
+            batch_i = features_matrix[i:end_i]
+            
+            for j in range(0, n_samples, batch_size):
+                end_j = min(j + batch_size, n_samples)
+                batch_j = features_matrix[j:end_j]
+                
+                similarity_batch = cosine_similarity(batch_i, batch_j)
+                # Fix the syntax error here - remove keyword argument
+                similarity_matrix[i:end_i, j:end_j] = similarity_batch
+                
+                similarity_matrix.flush()
+                gc.collect()
+            
+            pbar.update(end_i - i)
+        
+        pbar.close()
+        return np.array(similarity_matrix)
+    
+    finally:
+        # Ensure proper cleanup
+        del similarity_matrix
+        gc.collect()
+        
+        # Wait a bit before trying to remove file
+        import time
+        time.sleep(1)
+        
+        try:
+            os.remove(filename)
+        except:
+            print(f"Note: Could not remove {filename}. Please delete it manually.")
 
-
-
-similarity_matrix = cosine_similarity(x_train_encoded[features])
-
-#uncomment if u wanna save the model 
-
-#x_test.to_csv("x_test.csv",index=False)
-#y_test.to_csv("y_test.csv",index=False)
-#x_train_encoded.to_csv("x_train_encoded.csv",index=False)
-#y_train.to_csv("y_train.csv",index=False)
-#joblib.dump(pca, 'pca_model.joblib')
-#joblib.dump(scaler, 'scaler_model.joblib')
-#joblib.dump(similarity_matrix, 'similarity_matrix.joblib')
+print("Calculating similarity matrix for full dataset...")
+similarity_matrix = calculate_similarity_in_batches(x_train_encoded[features].values, batch_size=450)
 
 def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, top_n=5):
     try:
         train_data = pd.concat([x_train_encoded.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
-
-        song_index = train_data[train_data['track_name'] == track_name].index[0]
-
+        song_index = train_data[train_data['name'] == track_name].index[0]
+        
         similarity_scores = list(enumerate(similarity_matrix[song_index]))
-
         sorted_songs = sorted(similarity_scores, key=lambda x: x[1], reverse=True)
-
         top_songs = sorted_songs[1:top_n+1]
-
-        recommendations = [train_data.iloc[i[0]]['track_name'] for i in top_songs]
+        
+        recommendations = [train_data.iloc[i[0]]['name'] for i in top_songs]
         return recommendations
     except IndexError:
         return "Track not found in the training dataset."
-query_song = y_train.iloc[2]['track_name']  
+
+# Use full dataset for recommendations
+query_song = y_train.iloc[2]['name']
 recommendations = recommend_songs(query_song, x_train_encoded, y_train, similarity_matrix)
 
 # Output recommendations
