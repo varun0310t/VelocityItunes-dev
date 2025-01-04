@@ -153,7 +153,7 @@ x_train_reduced = pca.fit_transform(x_train_encoded)
 
 x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(n_components)])
 
-def calculate_similarity_in_batches(features_matrix, batch_size=500):
+def calculate_similarity_in_batches(features_matrix, batch_size=700):
     n_samples = features_matrix.shape[0]
     filename = 'similarity_matrix.npy'
     
@@ -259,7 +259,7 @@ input("\nPress Enter to continue with similarity matrix calculation (this may ta
 
 # Continue with similarity matrix calculation
 print("Calculating similarity matrix for full dataset...")
-similarity_matrix = calculate_similarity_in_batches(x_train_encoded[features].values, batch_size=500)
+similarity_matrix = calculate_similarity_in_batches(x_train_encoded[features].values, batch_size=1000)
 
 def map_speed_to_cluster(speed_kmh):
     """
@@ -343,27 +343,6 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
     
     print("All model components saved successfully!")
 
-def load_model_components(load_dir='./saved_models'):
-    """Load all model components"""
-    try:
-        # Load the data
-        x_train_encoded = pd.read_csv(f"{load_dir}/x_train_encoded.csv")
-        y_train = pd.read_csv(f"{load_dir}/y_train.csv")
-        
-        # Load numpy array
-        similarity_matrix = np.load(f"{load_dir}/similarity_matrix.npy")
-        
-        # Load sklearn models
-        kmeans_model = joblib.load(f"{load_dir}/kmeans_model.joblib")
-        scaler_model = joblib.load(f"{load_dir}/scaler_model.joblib")
-        pca_model = joblib.load(f"{load_dir}/pca_model.joblib")
-        
-        print("All model components loaded successfully!")
-        return x_train_encoded, y_train, similarity_matrix, kmeans_model, scaler_model, pca_model
-    
-    except Exception as e:
-        print(f"Error loading model components: {str(e)}")
-        return None
 
 # After training, save all components
 if similarity_matrix is not None:

@@ -8,6 +8,7 @@ __pycache__/
 node_modules
 .env
 *.npy
+*.joblib
 # Distribution / packaging
 .Python
 build/
