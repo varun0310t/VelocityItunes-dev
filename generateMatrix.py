@@ -158,7 +158,7 @@ def calculate_similarity_in_batches(features_matrix, batch_size=700):
     filename = 'similarity_matrix.npy'
     
     # Create memory-mapped file
-    similarity_matrix = np.memmap(filename, dtype='float32', mode='w+', shape=(n_samples, n_samples))
+    similarity_matrix = np.memmap(filename, dtype='float16', mode='w+', shape=(n_samples, n_samples))
     
     try:
         pbar = tqdm(total=n_samples, desc="Processing rows")
@@ -170,7 +170,7 @@ def calculate_similarity_in_batches(features_matrix, batch_size=700):
                 end_j = min(j + batch_size, n_samples)
                 batch_j = features_matrix[j:end_j]
                 
-                similarity_batch = cosine_similarity(batch_i, batch_j)
+                similarity_batch = cosine_similarity(batch_i, batch_j).astype(np.float16)
                 similarity_matrix[i:end_i, j:end_j] = similarity_batch
                 
                 similarity_matrix.flush()
