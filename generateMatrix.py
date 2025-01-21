@@ -6,8 +6,12 @@ import joblib
 import os
 from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity  # Add this import
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScale
 import gc  # Add garbage collector import
 from tqdm import tqdm  # Add for progress bar
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 
 """Importing Dataset"""
 dataset_path = './data.csv'
@@ -74,7 +78,38 @@ df_scaled
 
 c = df_scaled
 
-from sklearn.cluster import KMeans
+#PCA
+#analysis
+numerical_features = df.select_dtypes(include=['float64', 'int64'])
+
+scaler = StandardScaler()
+scaled_data = scaler.fit_transform(numerical_features)
+
+pca = PCA()
+pca.fit(scaled_data)
+
+explained_variance_ratio = pca.explained_variance_ratio_
+cumulative_variance = explained_variance_ratio.cumsum()
+
+plt.figure(figsize=(10, 6))
+plt.plot(range(1, len(cumulative_variance) + 1), cumulative_variance, marker='o', linestyle='--')
+plt.xlabel('Number of Components')
+plt.ylabel('Cumulative Explained Variance')
+plt.title('Explained Variance by PCA Components')
+plt.grid()
+plt.show()
+
+n_components = min(c.shape[0], c.shape[1])  
+pca = PCA(n_components=n_components)
+x_train_reduced = pca.fit_transform(c)  # `c` is the scaled feature set
+
+x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(n_components)])
+
+scaler = MinMaxScaler()
+x_train_reduced_scaled = scaler.fit_transform(x_train_reduced)
+x_train_scaled = pd.DataFrame(x_train_reduced_scaled, columns=x_train_reduced.columns)
+x_train_scaled.head() #contains pca and caled values
+
 wcss = []
 for i in range(1,11):
     kmeans = KMeans(n_clusters = i, init = 'k-means++', random_state = 42)
@@ -84,7 +119,7 @@ plt.plot(range(1,11),wcss)
 plt.show()
 
 kmeans = KMeans(n_clusters = 4, init = 'k-means++', random_state = 42)
-clusters = kmeans.fit_predict(c)
+clusters = kmeans.fit_predict(x_train_scaled)
 print(clusters)
 
 df['Clusters'] = clusters
@@ -127,31 +162,6 @@ x_test.head(5)
 
 y_train.head(5)
 
-x_train_encoded = x_train.drop(['artists'], axis=1)  # Remove artists column instead of encoding it
-
-columns_to_scale = ['tempo', 'key', 'loudness', 'valence',
-                    'instrumentalness', 'energy', 'mode', 'acousticness',
-                    'speechiness']
-
-scaler = MinMaxScaler()
-x_train_encoded[columns_to_scale] = scaler.fit_transform(x_train_encoded[columns_to_scale])
-print(x_train_encoded[columns_to_scale].head())
-
-
-x_train_encoded.head(5)
-
-print(list(x_train_encoded.columns))
-
-features = list(x_train_encoded.columns)
-
-from sklearn.decomposition import PCA
-
-# Calculate number of components based on available features
-n_components = min(len(features), 10)  # Use minimum of feature count or 10
-pca = PCA(n_components=n_components)
-x_train_reduced = pca.fit_transform(x_train_encoded)
-
-x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(n_components)])
 
 def calculate_similarity_in_batches(features_matrix, batch_size=700):
     n_samples = features_matrix.shape[0]
