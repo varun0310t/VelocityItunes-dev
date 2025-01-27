@@ -7,11 +7,13 @@ import os
 from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity  # Add this import
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScale
+from sklearn.preprocessing import StandardScaler
 import gc  # Add garbage collector import
 from tqdm import tqdm  # Add for progress bar
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+import scipy.sparse as sp  # Add sparse matrix import
+from joblib import Parallel, delayed  # Add for parallel processing
 
 """Importing Dataset"""
 dataset_path = './data.csv'
@@ -91,24 +93,33 @@ pca.fit(scaled_data)
 explained_variance_ratio = pca.explained_variance_ratio_
 cumulative_variance = explained_variance_ratio.cumsum()
 
+# Analyze variance explained
 plt.figure(figsize=(10, 6))
 plt.plot(range(1, len(cumulative_variance) + 1), cumulative_variance, marker='o', linestyle='--')
+plt.axhline(y=0.85, color='r', linestyle='--', label='85% Variance Threshold')
 plt.xlabel('Number of Components')
 plt.ylabel('Cumulative Explained Variance')
 plt.title('Explained Variance by PCA Components')
 plt.grid()
+plt.legend()
 plt.show()
 
-n_components = min(c.shape[0], c.shape[1])  
+# Reduce PCA components - Option 1: Using variance threshold
+# Force using only 3 PCA components
+n_components = 3  # Drastically reduce dimensions
+print(f"Using {n_components} PCA components")
+print(f"Variance explained: {cumulative_variance[n_components-1]*100:.2f}%")
+
 pca = PCA(n_components=n_components)
-x_train_reduced = pca.fit_transform(c)  # `c` is the scaled feature set
+x_train_reduced = pca.fit_transform(c)
 
 x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(n_components)])
 
 scaler = MinMaxScaler()
 x_train_reduced_scaled = scaler.fit_transform(x_train_reduced)
 x_train_scaled = pd.DataFrame(x_train_reduced_scaled, columns=x_train_reduced.columns)
-x_train_scaled.head() #contains pca and caled values
+x_train_scaled.head() #contains pca and scaled values
+x_train_encoded = x_train_scaled
 
 wcss = []
 for i in range(1,11):
@@ -162,39 +173,146 @@ x_test.head(5)
 
 y_train.head(5)
 
+# Add size tracking after data loading
+print("\nData size tracking:")
+print(f"Original dataset shape: {df.shape}")
+print(f"Memory usage: {df.memory_usage().sum() / 1024**2:.2f} MB")
 
-def calculate_similarity_in_batches(features_matrix, batch_size=700):
+# After PCA
+print("\nAfter PCA:")
+print(f"x_train_reduced shape: {x_train_reduced.shape}")
+print(f"Memory usage: {x_train_reduced.memory_usage().sum() / 1024**2:.2f} MB")
+
+# Before similarity matrix calculation
+print("\nBefore similarity matrix:")
+print(f"x_train_scaled shape: {x_train_scaled.shape}")
+print(f"Memory usage: {x_train_scaled.memory_usage().sum() / 1024**2:.2f} MB")
+
+def process_batch(i, j, batch_i, batch_j, threshold, n_samples):
+    """Process a single batch of similarity calculations"""
+    similarity_batch = cosine_similarity(batch_i, batch_j)
+    significant_similarities = np.where(similarity_batch > threshold)
+    batch_rows = significant_similarities[0] + i
+    batch_cols = significant_similarities[1] + j
+    batch_data = similarity_batch[significant_similarities].astype(np.float16)
+    
+    # Filter diagonal and lower triangle entries
+    valid_indices = batch_cols >= batch_rows
+    return (batch_rows[valid_indices], 
+            batch_cols[valid_indices], 
+            batch_data[valid_indices])
+
+def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
     n_samples = features_matrix.shape[0]
     filename = 'similarity_matrix.npy'
     
-    # Create memory-mapped file
-    similarity_matrix = np.memmap(filename, dtype='float16', mode='w+', shape=(n_samples, n_samples))
+    # Calculate size for upper triangular matrix (excluding diagonal)
+    triu_elements = (n_samples * (n_samples - 1)) // 2
+    matrix_size_gb = (triu_elements * 2) / (1024**3)
+    
+    print(f"\nSimilarity matrix details:")
+    print(f"Number of samples: {n_samples}")
+    print(f"Upper triangular elements: {triu_elements}")
+    print(f"Expected size: {matrix_size_gb:.2f} GB")
+    
+    proceed = input("Continue with matrix calculation? (y/n): ")
+    if proceed.lower() != 'y':
+        return None
     
     try:
-        pbar = tqdm(total=n_samples, desc="Processing rows")
-        for i in range(0, n_samples, batch_size):
-            end_i = min(i + batch_size, n_samples)
-            batch_i = features_matrix[i:end_i]
-            
-            for j in range(0, n_samples, batch_size):
-                end_j = min(j + batch_size, n_samples)
-                batch_j = features_matrix[j:end_j]
-                
-                similarity_batch = cosine_similarity(batch_i, batch_j).astype(np.float16)
-                similarity_matrix[i:end_i, j:end_j] = similarity_batch
-                
-                similarity_matrix.flush()
-                gc.collect()
-            
-            pbar.update(end_i - i)
+        # Create memory-mapped file for upper triangle
+        similarity_matrix = np.memmap(filename, dtype='float16', mode='w+', 
+                                    shape=(triu_elements,))
         
-        pbar.close()
-        # Don't convert to array, return the memmap
+        idx = 0  # Global index for storing in 1D array
+        total_rows = (n_samples + batch_size - 1) // batch_size
+        
+        with tqdm(total=total_rows, desc="Processing rows") as pbar:
+            for i in range(0, n_samples, batch_size):
+                end_i = min(i + batch_size, n_samples)
+                rows = end_i - i
+                batch_i = features_matrix[i:end_i]
+                
+                for j in range(i + 1, n_samples, batch_size):
+                    end_j = min(j + batch_size, n_samples)
+                    cols = end_j - j
+                    batch_j = features_matrix[j:end_j]
+                    
+                    # Calculate similarities
+                    sim_batch = cosine_similarity(batch_i, batch_j).astype(np.float16)
+                    
+                    # Calculate exact number of elements to store
+                    elements_to_store = rows * cols
+                    
+                    # Ensure we don't exceed array bounds
+                    if idx + elements_to_store <= triu_elements:
+                        similarity_matrix[idx:idx + elements_to_store] = sim_batch.ravel()
+                        idx += elements_to_store
+                    
+                    similarity_matrix.flush()
+                    gc.collect()
+                
+                pbar.update(1)
+        
+        print("\nMatrix calculation complete!")
+        print(f"Total elements stored: {idx}")
         return similarity_matrix
     
     except Exception as e:
         print(f"Error in similarity calculation: {str(e)}")
+        if 'similarity_matrix' in locals():
+            del similarity_matrix
         return None
+
+# Add cluster column to x_train_encoded
+x_train_encoded['Cluster'] = clusters  # Add this line before calculating similarity matrix
+
+def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=5):
+    try:
+        if similarity_matrix is None:
+            raise ValueError("Similarity matrix is not available")
+            
+        train_data = pd.concat([x_train_encoded.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
+        song_index = train_data[train_data['name'] == track_name].index[0]
+        n_samples = len(train_data)
+        
+        # Get similarity scores
+        def get_similarity_score(similarity_matrix, index1, index2):
+            """Retrieve similarity score from the similarity matrix"""
+            if index1 == index2:
+                return 1.0  # Similarity with itself is always 1
+            elif index1 < index2:
+                index1, index2 = index2, index1  # Ensure index1 > index2 for upper triangle
+            return similarity_matrix[index1 * (index1 - 1) // 2 + index2]
+        
+        similarity_scores = [(i, get_similarity_score(similarity_matrix, song_index, i)) 
+                             for i in range(n_samples)]
+        
+        if speed_kmh is not None:
+            # Get preferred cluster for current speed
+            target_cluster = map_speed_to_cluster(speed_kmh)
+            
+            # Adjust similarity scores based on cluster matching
+            weighted_scores = []
+            for idx, score in similarity_scores:
+                song_cluster = train_data.iloc[idx]['Cluster']
+                # Give higher weight to songs in the target cluster
+                cluster_weight = 1.5 if song_cluster == target_cluster else 1.0
+                weighted_scores.append((idx, score * cluster_weight))
+            
+            sorted_songs = sorted(weighted_scores, key=lambda x: x[1], reverse=True)
+        else:
+            sorted_songs = sorted(similarity_scores, key=lambda x: x[1], reverse=True)
+
+        top_songs = sorted_songs[1:top_n+1]
+        recommendations = []
+        for idx, score in top_songs:
+            song_name = train_data.iloc[idx]['name']
+            song_cluster = train_data.iloc[idx]['Cluster']
+            recommendations.append((song_name, song_cluster))
+        return recommendations
+    except IndexError:
+        return "Track not found in the training dataset."
 
 # Add cluster analysis here
 def analyze_clusters(df, clusters, numeric_features):
@@ -267,9 +385,10 @@ analyze_clusters(df, clusters, numeric_features_for_analysis)
 # Ask user if they want to continue with similarity matrix calculation
 input("\nPress Enter to continue with similarity matrix calculation (this may take a while)...")
 
-# Continue with similarity matrix calculation
+# Replace feature matrix calculation with x_train_scaled
 print("Calculating similarity matrix for full dataset...")
-similarity_matrix = calculate_similarity_in_batches(x_train_encoded[features].values, batch_size=1000)
+x_train_scaled_float16 = x_train_scaled.values.astype(np.float16)  # Convert to float16
+similarity_matrix = calculate_similarity_in_batches(x_train_scaled_float16, batch_size=500, n_jobs=4)
 
 def map_speed_to_cluster(speed_kmh):
     """
@@ -287,39 +406,6 @@ def map_speed_to_cluster(speed_kmh):
         return 2  # Modern Mixed - moderate energy
     else:  # Fast driving
         return 3  # High Energy Contemporary - most energetic
-
-def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=5):
-    try:
-        train_data = pd.concat([x_train_encoded.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
-        song_index = train_data[train_data['name'] == track_name].index[0]
-        
-        similarity_scores = list(enumerate(similarity_matrix[song_index]))
-        
-        if speed_kmh is not None:
-            # Get preferred cluster for current speed
-            target_cluster = map_speed_to_cluster(speed_kmh)
-            
-            # Adjust similarity scores based on cluster matching
-            weighted_scores = []
-            for idx, score in similarity_scores:
-                song_cluster = train_data.iloc[idx]['Cluster']
-                # Give higher weight to songs in the target cluster
-                cluster_weight = 1.5 if song_cluster == target_cluster else 1.0
-                weighted_scores.append((idx, score * cluster_weight))
-            
-            sorted_songs = sorted(weighted_scores, key=lambda x: x[1], reverse=True)
-        else:
-            sorted_songs = sorted(similarity_scores, key=lambda x: x[1], reverse=True)
-
-        top_songs = sorted_songs[1:top_n+1]
-        recommendations = []
-        for idx, score in top_songs:
-            song_name = train_data.iloc[idx]['name']
-            song_cluster = train_data.iloc[idx]['Cluster']
-            recommendations.append((song_name, song_cluster))
-        return recommendations
-    except IndexError:
-        return "Track not found in the training dataset."
 
 # Example usage with speed
 # ...existing code...
@@ -344,7 +430,7 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
     
     # Copy similarity matrix file instead of loading it
     import shutil
-    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npy")
+    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npz")
     
     # Save sklearn models
     joblib.dump(kmeans_model, f"{save_dir}/kmeans_model.joblib")
@@ -357,7 +443,7 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
 # After training, save all components
 if similarity_matrix is not None:
     # Save components using the file path
-    save_model_components(x_train_encoded, y_train, 'similarity_matrix.npy', kmeans, scaler, pca)
+    save_model_components(x_train_encoded, y_train, 'similarity_matrix.npz', kmeans, scaler, pca)
     
     # Test recommendations
     speeds = [30, 60, 90, 120]
