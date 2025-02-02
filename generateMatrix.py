@@ -6,11 +6,9 @@ import joblib
 import os
 from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity  # Add this import
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import gc  # Add garbage collector import
 from tqdm import tqdm  # Add for progress bar
-from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 import scipy.sparse as sp  # Add sparse matrix import
 from joblib import Parallel, delayed  # Add for parallel processing
@@ -80,51 +78,14 @@ df_scaled
 
 c = df_scaled
 
-#PCA
-#analysis
-numerical_features = df.select_dtypes(include=['float64', 'int64'])
-
-scaler = StandardScaler()
-scaled_data = scaler.fit_transform(numerical_features)
-
-pca = PCA()
-pca.fit(scaled_data)
-
-explained_variance_ratio = pca.explained_variance_ratio_
-cumulative_variance = explained_variance_ratio.cumsum()
-
-# Analyze variance explained
-plt.figure(figsize=(10, 6))
-plt.plot(range(1, len(cumulative_variance) + 1), cumulative_variance, marker='o', linestyle='--')
-plt.axhline(y=0.85, color='r', linestyle='--', label='85% Variance Threshold')
-plt.xlabel('Number of Components')
-plt.ylabel('Cumulative Explained Variance')
-plt.title('Explained Variance by PCA Components')
-plt.grid()
-plt.legend()
-plt.show()
-
-# Reduce PCA components - Option 1: Using variance threshold
-# Force using only 3 PCA components
-n_components = 3  # Drastically reduce dimensions
-print(f"Using {n_components} PCA components")
-print(f"Variance explained: {cumulative_variance[n_components-1]*100:.2f}%")
-
-pca = PCA(n_components=n_components)
-x_train_reduced = pca.fit_transform(c)
-
-x_train_reduced = pd.DataFrame(x_train_reduced, columns=[f'PC{i+1}' for i in range(n_components)])
-
-scaler = MinMaxScaler()
-x_train_reduced_scaled = scaler.fit_transform(x_train_reduced)
-x_train_scaled = pd.DataFrame(x_train_reduced_scaled, columns=x_train_reduced.columns)
-x_train_scaled.head() #contains pca and scaled values
+# Use scaled features directly instead of PCA
+x_train_scaled = df_scaled
 x_train_encoded = x_train_scaled
 
 wcss = []
 for i in range(1,11):
     kmeans = KMeans(n_clusters = i, init = 'k-means++', random_state = 42)
-    kmeans.fit(c)
+    kmeans.fit(x_train_scaled)
     wcss.append(kmeans.inertia_)
 plt.plot(range(1,11),wcss)
 plt.show()
@@ -178,11 +139,6 @@ print("\nData size tracking:")
 print(f"Original dataset shape: {df.shape}")
 print(f"Memory usage: {df.memory_usage().sum() / 1024**2:.2f} MB")
 
-# After PCA
-print("\nAfter PCA:")
-print(f"x_train_reduced shape: {x_train_reduced.shape}")
-print(f"Memory usage: {x_train_reduced.memory_usage().sum() / 1024**2:.2f} MB")
-
 # Before similarity matrix calculation
 print("\nBefore similarity matrix:")
 print(f"x_train_scaled shape: {x_train_scaled.shape}")
@@ -202,13 +158,13 @@ def process_batch(i, j, batch_i, batch_j, threshold, n_samples):
             batch_cols[valid_indices], 
             batch_data[valid_indices])
 
-def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
+def calculate_similarity_in_batches(features_matrix, batch_size=1000, threshold=0.3, n_jobs=4):
     n_samples = features_matrix.shape[0]
     filename = 'similarity_matrix.npy'
     
-    # Calculate size for upper triangular matrix (excluding diagonal)
+    # Calculate theoretical sizes with int8 instead of float16
     triu_elements = (n_samples * (n_samples - 1)) // 2
-    matrix_size_gb = (triu_elements * 2) / (1024**3)
+    matrix_size_gb = (triu_elements * 1) / (1024**3)  # 1 byte for int8 instead of 2 for float16
     
     print(f"\nSimilarity matrix details:")
     print(f"Number of samples: {n_samples}")
@@ -220,11 +176,11 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
         return None
     
     try:
-        # Create memory-mapped file for upper triangle
-        similarity_matrix = np.memmap(filename, dtype='float16', mode='w+', 
+        # Create memory-mapped file for upper triangle using int8
+        similarity_matrix = np.memmap(filename, dtype='int8', mode='w+', 
                                     shape=(triu_elements,))
         
-        idx = 0  # Global index for storing in 1D array
+        idx = 0
         total_rows = (n_samples + batch_size - 1) // batch_size
         
         with tqdm(total=total_rows, desc="Processing rows") as pbar:
@@ -238,13 +194,13 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
                     cols = end_j - j
                     batch_j = features_matrix[j:end_j]
                     
-                    # Calculate similarities
-                    sim_batch = cosine_similarity(batch_i, batch_j).astype(np.float16)
+                    # Calculate similarities and convert to int8 range (0-255)
+                    sim_batch = cosine_similarity(batch_i, batch_j)
+                    # Scale from [-1,1] to [0,255]
+                    sim_batch = ((sim_batch + 1) * 127.5).astype(np.int8)
                     
-                    # Calculate exact number of elements to store
                     elements_to_store = rows * cols
                     
-                    # Ensure we don't exceed array bounds
                     if idx + elements_to_store <= triu_elements:
                         similarity_matrix[idx:idx + elements_to_store] = sim_batch.ravel()
                         idx += elements_to_store
@@ -255,7 +211,6 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
                 pbar.update(1)
         
         print("\nMatrix calculation complete!")
-        print(f"Total elements stored: {idx}")
         return similarity_matrix
     
     except Exception as e:
@@ -263,6 +218,17 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
         if 'similarity_matrix' in locals():
             del similarity_matrix
         return None
+
+def get_similarity_score(similarity_matrix, i, j):
+    """Get similarity score from int8 matrix and convert back to float"""
+    if similarity_matrix is None:
+        raise ValueError("Similarity matrix is not available")
+    if i == j:
+        return 1.0
+    if i > j:
+        i, j = j, i
+    # Convert back from int8 to float range [-1,1]
+    return float(similarity_matrix[i, j]) / 127.5 - 1.0
 
 # Add cluster column to x_train_encoded
 x_train_encoded['Cluster'] = clusters  # Add this line before calculating similarity matrix
@@ -419,7 +385,7 @@ for speed in speeds:
     for song, cluster in recommendations:
         print(f"- {song} (Cluster {cluster})")
 
-def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmeans_model, scaler_model, pca_model, save_dir='./saved_models'):
+def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmeans_model, scaler_model, save_dir='./saved_models'):
     """Save all model components"""
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -430,12 +396,11 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
     
     # Copy similarity matrix file instead of loading it
     import shutil
-    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npz")
+    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npy")
     
     # Save sklearn models
     joblib.dump(kmeans_model, f"{save_dir}/kmeans_model.joblib")
     joblib.dump(scaler_model, f"{save_dir}/scaler_model.joblib")
-    joblib.dump(pca_model, f"{save_dir}/pca_model.joblib")
     
     print("All model components saved successfully!")
 
@@ -443,7 +408,7 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
 # After training, save all components
 if similarity_matrix is not None:
     # Save components using the file path
-    save_model_components(x_train_encoded, y_train, 'similarity_matrix.npz', kmeans, scaler, pca)
+    save_model_components(x_train_encoded, y_train, 'similarity_matrix.npz', kmeans, scaler)
     
     # Test recommendations
     speeds = [30, 60, 90, 120]
@@ -462,7 +427,7 @@ if similarity_matrix is not None:
 # Load the models
 loaded_components = load_model_components()
 if loaded_components is not None:
-    x_train_encoded, y_train, similarity_matrix, kmeans, scaler, pca = loaded_components
+    x_train_encoded, y_train, similarity_matrix, kmeans, scaler = loaded_components
     
     # Use loaded models for predictions
     speeds = [30, 60, 90, 120]
