@@ -78,14 +78,14 @@ df_scaled
 
 c = df_scaled
 
-# Use scaled features directly instead of PCA
+# Use scaled features directly
 x_train_scaled = df_scaled
 x_train_encoded = x_train_scaled
 
 wcss = []
 for i in range(1,11):
     kmeans = KMeans(n_clusters = i, init = 'k-means++', random_state = 42)
-    kmeans.fit(x_train_scaled)
+    kmeans.fit(c)
     wcss.append(kmeans.inertia_)
 plt.plot(range(1,11),wcss)
 plt.show()
@@ -158,13 +158,13 @@ def process_batch(i, j, batch_i, batch_j, threshold, n_samples):
             batch_cols[valid_indices], 
             batch_data[valid_indices])
 
-def calculate_similarity_in_batches(features_matrix, batch_size=1000, threshold=0.3, n_jobs=4):
+def calculate_similarity_in_batches(features_matrix, batch_size=1000, n_jobs=4):
     n_samples = features_matrix.shape[0]
     filename = 'similarity_matrix.npy'
     
-    # Calculate theoretical sizes with int8 instead of float16
+    # Calculate size for upper triangular matrix (excluding diagonal)
     triu_elements = (n_samples * (n_samples - 1)) // 2
-    matrix_size_gb = (triu_elements * 1) / (1024**3)  # 1 byte for int8 instead of 2 for float16
+    matrix_size_gb = (triu_elements * 2) / (1024**3)
     
     print(f"\nSimilarity matrix details:")
     print(f"Number of samples: {n_samples}")
@@ -176,11 +176,11 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, threshold=
         return None
     
     try:
-        # Create memory-mapped file for upper triangle using int8
-        similarity_matrix = np.memmap(filename, dtype='int8', mode='w+', 
+        # Create memory-mapped file for upper triangle
+        similarity_matrix = np.memmap(filename, dtype='float16', mode='w+', 
                                     shape=(triu_elements,))
         
-        idx = 0
+        idx = 0  # Global index for storing in 1D array
         total_rows = (n_samples + batch_size - 1) // batch_size
         
         with tqdm(total=total_rows, desc="Processing rows") as pbar:
@@ -194,13 +194,13 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, threshold=
                     cols = end_j - j
                     batch_j = features_matrix[j:end_j]
                     
-                    # Calculate similarities and convert to int8 range (0-255)
-                    sim_batch = cosine_similarity(batch_i, batch_j)
-                    # Scale from [-1,1] to [0,255]
-                    sim_batch = ((sim_batch + 1) * 127.5).astype(np.int8)
+                    # Calculate similarities
+                    sim_batch = cosine_similarity(batch_i, batch_j).astype(np.float16)
                     
+                    # Calculate exact number of elements to store
                     elements_to_store = rows * cols
                     
+                    # Ensure we don't exceed array bounds
                     if idx + elements_to_store <= triu_elements:
                         similarity_matrix[idx:idx + elements_to_store] = sim_batch.ravel()
                         idx += elements_to_store
@@ -211,6 +211,7 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, threshold=
                 pbar.update(1)
         
         print("\nMatrix calculation complete!")
+        print(f"Total elements stored: {idx}")
         return similarity_matrix
     
     except Exception as e:
@@ -218,17 +219,6 @@ def calculate_similarity_in_batches(features_matrix, batch_size=1000, threshold=
         if 'similarity_matrix' in locals():
             del similarity_matrix
         return None
-
-def get_similarity_score(similarity_matrix, i, j):
-    """Get similarity score from int8 matrix and convert back to float"""
-    if similarity_matrix is None:
-        raise ValueError("Similarity matrix is not available")
-    if i == j:
-        return 1.0
-    if i > j:
-        i, j = j, i
-    # Convert back from int8 to float range [-1,1]
-    return float(similarity_matrix[i, j]) / 127.5 - 1.0
 
 # Add cluster column to x_train_encoded
 x_train_encoded['Cluster'] = clusters  # Add this line before calculating similarity matrix
@@ -396,7 +386,7 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
     
     # Copy similarity matrix file instead of loading it
     import shutil
-    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npy")
+    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npz")
     
     # Save sklearn models
     joblib.dump(kmeans_model, f"{save_dir}/kmeans_model.joblib")
