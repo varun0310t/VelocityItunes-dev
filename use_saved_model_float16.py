@@ -131,10 +131,40 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, spe
                              train_data.iloc[idx]['Cluster']) 
                              for idx in sorted_indices]
         
-        return recommendations, time.time() - start_time
+        return recommendations
     except IndexError:
         return "Track not found in the training dataset.", 0
-
+def get_random_songs_by_speed(speed_kmh, y_train, x_train_encoded, top_n=5):
+    """Get random songs based on speed only"""
+    try:
+        # Map speed to appropriate cluster
+        target_cluster = sr.map_speed_to_cluster(speed_kmh)
+        
+        # Combine song data with cluster info
+        song_data = pd.concat([y_train, x_train_encoded['Cluster']], axis=1)
+        
+        # Filter songs from target cluster
+        cluster_songs = song_data[song_data['Cluster'] == target_cluster]
+        
+        if cluster_songs.empty:
+            return "No songs found for this speed range"
+            
+        # Get random songs
+        random_songs = cluster_songs.sample(
+            n=min(top_n, len(cluster_songs)),
+            replace=False
+        )
+        
+        # Format output
+        recommendations = [
+            (str(row['name']), int(row['Cluster'])) 
+            for _, row in random_songs.iterrows()
+        ]
+        
+        return recommendations
+        
+    except Exception as e:
+        return f"Error getting recommendations: {str(e)}"
 def main():
     components = load_saved_components()
     if components:
