@@ -88,15 +88,29 @@ def get_similarity_scores_vectorized(similarity_matrix, song_index, n_samples, u
         return list(enumerate(scores))
 
 def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=50, use_ram=False):
-    """Use the same recommendation logic as standalone version for natural diversity"""
+    """Use recommendation logic with flexible string matching and optional speed-based weighting.
+       Falls back to a random recommendations strategy if no matching track is found.
+    """
     try:
         start_time = time.time()
         
+        # Concatenate and clean up data
         train_data = pd.concat([x_train_encoded.reset_index(drop=True),
-                              y_train.reset_index(drop=True)], axis=1)
-        train_data = train_data.dropna(subset=['name'])
+                                y_train.reset_index(drop=True)], axis=1)
+        train_data = train_data.dropna(subset=['name']).copy()
         
-        song_index = train_data[train_data['name'] == track_name].index[0]
+        # Create a lower-cased column for more flexible matching
+        train_data['name_lower'] = train_data['name'].str.lower()
+        track_name_lower = track_name.strip().lower()
+        
+        # Look for partial match using string containment.
+        matches = train_data[train_data['name_lower'].str.contains(track_name_lower)]
+        if matches.empty:
+            # Instead of returning a tuple, just raise an exception:
+            raise IndexError("Track not found in the training dataset")
+        
+        # Use the first match for recommendation
+        song_index = matches.index[0]
         n_samples = len(train_data)
         
         # Get similarity scores
@@ -108,14 +122,14 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, spe
             clusters = train_data['Cluster'].values
             scores = np.array([score for _, score in similarity_scores])
             
-            # Simple cluster weighting
+            # Apply simple cluster weighting
             cluster_weights = np.where(clusters == target_cluster, 1.5, 1.0)
             weighted_scores = scores * cluster_weights
             
-            sorted_indices = np.argsort(weighted_scores)[::-1][1:top_n*2]
+            # Exclude the queried song and fetch more indices than needed for filtering.
+            sorted_indices = np.argsort(weighted_scores)[::-1][1:top_n * 2]
             valid_recommendations = []
             
-            # Get valid recommendations
             for idx in sorted_indices:
                 if len(valid_recommendations) >= top_n:
                     break
@@ -127,13 +141,17 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, spe
             recommendations = valid_recommendations[:top_n]
         else:
             sorted_indices = np.argsort([score for _, score in similarity_scores])[::-1][1:top_n+1]
-            recommendations = [(train_data.iloc[idx]['name'], 
-                             train_data.iloc[idx]['Cluster']) 
-                             for idx in sorted_indices]
+            recommendations = [
+                (train_data.iloc[idx]['name'], train_data.iloc[idx]['Cluster'])
+                for idx in sorted_indices
+            ]
         
         return recommendations
     except IndexError:
-        return "Track not found in the training dataset.", 0
+        # Propagate the exception to let the API endpoint fallback.
+        raise
+    except Exception as e:
+        raise e
 def get_random_songs_by_speed(speed_kmh, y_train, x_train_encoded, top_n=5):
     """Get random songs based on speed only"""
     try:
