@@ -1,6 +1,6 @@
 import random
 import pandas as pd
-def map_speed_to_cluster(speed_kmh):
+def map_speed_to_cluster(speed_kmh,CustomMode=False,Mode=-1):
     """
     Maps speed ranges to appropriate song clusters based on analysis:
     0: Classical/Instrumental (Low tempo, High acousticness, Instrumental)
@@ -8,14 +8,29 @@ def map_speed_to_cluster(speed_kmh):
     2: Modern Mixed (Medium-high tempo, Upbeat, Moderate energy)
     3: High Energy Contemporary (Highest tempo, Major key, High energy)
     """
-    if speed_kmh < 30:      # Slow city driving
+    ModeMap=[[6,9,13],[8,15,25],[30,45,60],[40,60,80]]
+    if CustomMode==False:
+        if speed_kmh < 30:      # Slow city driving
+            return 0
+        elif speed_kmh < 60:    # City driving
+            return 1
+        elif speed_kmh < 90:    # Highway cruising
+            return 2
+        else:                   # Fast driving
+            return 3
+    
+    ## cluster mapping based on custom mode 
+    
+    if speed_kmh < ModeMap[Mode][0]:      
         return 0
-    elif speed_kmh < 60:    # City driving
+    elif speed_kmh < ModeMap[Mode][1]:   
         return 1
-    elif speed_kmh < 90:    # Highway cruising
+    elif speed_kmh < ModeMap[Mode][2]:   
         return 2
-    else:                   # Fast driving
+    else:                   
         return 3
+    
+        
 
 def random_recommendation_by_speed(speed_kmh, y_train, x_train_encoded, count=5):
     """Get random song recommendations for given speed, filtering out nan values"""

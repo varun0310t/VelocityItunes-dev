@@ -87,7 +87,7 @@ def get_similarity_scores_vectorized(similarity_matrix, song_index, n_samples, u
         
         return list(enumerate(scores))
 
-def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=50, use_ram=False):
+def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=50, use_ram=False,CustomMode=False,Mode=-1):
     """Use recommendation logic with flexible string matching and optional speed-based weighting.
        Falls back to a random recommendations strategy if no matching track is found.
     """
@@ -118,7 +118,7 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, spe
             similarity_matrix, song_index, n_samples, use_ram)
         
         if speed_kmh is not None:
-            target_cluster = sr.map_speed_to_cluster(speed_kmh)
+            target_cluster = sr.map_speed_to_cluster(speed_kmh,CustomMode,Mode)
             clusters = train_data['Cluster'].values
             scores = np.array([score for _, score in similarity_scores])
             

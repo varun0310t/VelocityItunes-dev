@@ -82,6 +82,8 @@ def get_recommendations():
         song_name = data.get('song_name')
         speed = int(data.get('speed', 60))
         n_songs = int(data.get('n_songs', 5))
+        CustomMode=bool(data.get('CustomMode',False))
+        Mode=int(data.get('Mode',-1))
         
         if not song_name:
             return jsonify({"error": "song_name is required"}), 400
@@ -96,7 +98,9 @@ def get_recommendations():
                 y_train,
                 similarity_matrix,
                 speed_kmh=speed,
-                top_n=n_songs
+                top_n=n_songs,
+                CustomMode=CustomMode,
+                Mode=Mode
             )
         except IndexError as idx_err:
             # Fallback to random recommendations if no match is found
