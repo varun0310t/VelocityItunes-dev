@@ -1,5 +1,5 @@
 import os
-import numpy as np
+import numpy  as np
 import pandas as pd
 import joblib
 import speed_recommender as sr
@@ -23,8 +23,15 @@ def load_saved_components(load_dir='./saved_models'):
         use_ram = get_memory_preference()
         print(f"\nUsing {'RAM' if use_ram else 'memory mapping'} for matrix operations")
         
+        # Load both features and artist information
         x_train_encoded = pd.read_csv(f"{load_dir}/x_train_encoded.csv")
         y_train = pd.read_csv(f"{load_dir}/y_train.csv")
+        
+        # Load original dataset to get artist information and IDs
+        df = pd.read_csv('./data.csv')
+        # Merge artist and ID information with y_train
+        y_train['artists'] = df['artists']
+        y_train['spotify_id'] = df['id']  # Use original Spotify ID from dataset
 
         n_samples = len(x_train_encoded)
         triu_elements = (n_samples * (n_samples - 1)) // 2
@@ -87,47 +94,63 @@ def get_similarity_scores_vectorized(similarity_matrix, song_index, n_samples, u
         
         return list(enumerate(scores))
 
-def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=50, use_ram=False,CustomMode=False,Mode=-1):
-    """Use recommendation logic with flexible string matching and optional speed-based weighting.
-       Falls back to a random recommendations strategy if no matching track is found.
-    """
+def clean_artist_string(artist_str):
+    """Convert artist string to array of artist names"""
+    if isinstance(artist_str, str):
+        # Remove outer brackets and split by comma
+        # Handle both string representation of list and direct string
+        if artist_str.startswith('[') and artist_str.endswith(']'):
+            # Handle list representation
+            artists = artist_str.strip('[]').split(',')
+        else:
+            # Handle direct string
+            artists = [artist_str]
+        
+        # Clean each artist name
+        return [
+            artist.strip().strip('\'\"') 
+            for artist in artists 
+            if artist.strip()
+        ]
+    return [str(artist_str)]
+
+def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, speed_kmh=None, top_n=50, use_ram=False, CustomMode=False, Mode=-1):
+    """Use recommendation logic with original IDs"""
     try:
         start_time = time.time()
         
-        # Concatenate and clean up data
-        train_data = pd.concat([x_train_encoded.reset_index(drop=True),
-                                y_train.reset_index(drop=True)], axis=1)
-        train_data = train_data.dropna(subset=['name']).copy()
+        # Include artists and ID in train_data
+        train_data = pd.concat([
+            x_train_encoded.reset_index(drop=True),
+            y_train.reset_index(drop=True)
+        ], axis=1)
+        train_data = train_data.dropna(subset=['name'])
+        train_data['id'] = train_data.index  # Add ID column
         
         # Create a lower-cased column for more flexible matching
         train_data['name_lower'] = train_data['name'].str.lower()
         track_name_lower = track_name.strip().lower()
         
-        # Look for partial match using string containment.
         matches = train_data[train_data['name_lower'].str.contains(track_name_lower)]
         if matches.empty:
-            # Instead of returning a tuple, just raise an exception:
             raise IndexError("Track not found in the training dataset")
         
-        # Use the first match for recommendation
         song_index = matches.index[0]
         n_samples = len(train_data)
         
-        # Get similarity scores
         similarity_scores = get_similarity_scores_vectorized(
             similarity_matrix, song_index, n_samples, use_ram)
         
         if speed_kmh is not None:
-            target_cluster = sr.map_speed_to_cluster(speed_kmh,CustomMode,Mode)
+            # Use CustomMode and Mode if provided
+            target_cluster = Mode if CustomMode else sr.map_speed_to_cluster(speed_kmh)
             clusters = train_data['Cluster'].values
             scores = np.array([score for _, score in similarity_scores])
             
-            # Apply simple cluster weighting
             cluster_weights = np.where(clusters == target_cluster, 1.5, 1.0)
             weighted_scores = scores * cluster_weights
             
-            # Exclude the queried song and fetch more indices than needed for filtering.
-            sorted_indices = np.argsort(weighted_scores)[::-1][1:top_n * 2]
+            sorted_indices = np.argsort(weighted_scores)[::-1][1:top_n*2]
             valid_recommendations = []
             
             for idx in sorted_indices:
@@ -135,47 +158,53 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, spe
                     break
                 name = train_data.iloc[idx]['name']
                 cluster = train_data.iloc[idx]['Cluster']
+                artists = clean_artist_string(train_data.iloc[idx]['artists'])
+                spotify_id = train_data.iloc[idx]['spotify_id']  # Use Spotify ID
+                
                 if pd.notna(name):
-                    valid_recommendations.append((name, cluster))
+                    valid_recommendations.append((name, cluster, artists, spotify_id))
             
             recommendations = valid_recommendations[:top_n]
         else:
             sorted_indices = np.argsort([score for _, score in similarity_scores])[::-1][1:top_n+1]
             recommendations = [
-                (train_data.iloc[idx]['name'], train_data.iloc[idx]['Cluster'])
+                (train_data.iloc[idx]['name'],
+                 train_data.iloc[idx]['Cluster'],
+                 clean_artist_string(train_data.iloc[idx]['artists']),
+                 train_data.iloc[idx]['spotify_id'])  # Use Spotify ID
                 for idx in sorted_indices
             ]
         
         return recommendations
     except IndexError:
-        # Propagate the exception to let the API endpoint fallback.
         raise
     except Exception as e:
         raise e
+
 def get_random_songs_by_speed(speed_kmh, y_train, x_train_encoded, top_n=5):
-    """Get random songs based on speed only"""
+    """Get random songs with cleaned artist info"""
     try:
-        # Map speed to appropriate cluster
         target_cluster = sr.map_speed_to_cluster(speed_kmh)
         
-        # Combine song data with cluster info
-        song_data = pd.concat([y_train, x_train_encoded['Cluster']], axis=1)
+        # Combine all necessary information
+        song_data = pd.concat([
+            y_train[['name', 'artists', 'spotify_id']],  # Include Spotify ID
+            x_train_encoded['Cluster']
+        ], axis=1)
+        song_data['id'] = song_data.index
         
-        # Filter songs from target cluster
         cluster_songs = song_data[song_data['Cluster'] == target_cluster]
         
         if cluster_songs.empty:
             return "No songs found for this speed range"
             
-        # Get random songs
-        random_songs = cluster_songs.sample(
-            n=min(top_n, len(cluster_songs)),
-            replace=False
-        )
+        random_songs = cluster_songs.sample(n=min(top_n, len(cluster_songs)), replace=False)
         
-        # Format output
         recommendations = [
-            (str(row['name']), int(row['Cluster'])) 
+            (str(row['name']), 
+             int(row['Cluster']),
+             clean_artist_string(row['artists']),
+             str(row['spotify_id']))  # Use Spotify ID
             for _, row in random_songs.iterrows()
         ]
         
@@ -183,6 +212,7 @@ def get_random_songs_by_speed(speed_kmh, y_train, x_train_encoded, top_n=5):
         
     except Exception as e:
         return f"Error getting recommendations: {str(e)}"
+
 def main():
     components = load_saved_components()
     if components:
