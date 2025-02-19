@@ -181,6 +181,52 @@ def recommend_songs(track_name, x_train_encoded, y_train, similarity_matrix, spe
     except Exception as e:
         raise e
 
+def recommend_songs_vanilla(track_name, x_train_encoded, y_train, similarity_matrix, top_n=5, use_ram=False):
+    """Pure similarity-based recommendation without speed considerations"""
+    try:
+        start_time = time.time()
+        
+        # Include artists and ID in train_data
+        train_data = pd.concat([
+            x_train_encoded.reset_index(drop=True),
+            y_train.reset_index(drop=True)
+        ], axis=1)
+        train_data = train_data.dropna(subset=['name'])
+        
+        # Create a lower-cased column for more flexible matching
+        train_data['name_lower'] = train_data['name'].str.lower()
+        track_name_lower = track_name.strip().lower()
+        
+        matches = train_data[train_data['name_lower'].str.contains(track_name_lower)]
+        if matches.empty:
+            raise IndexError("Track not found in the training dataset")
+        
+        song_index = matches.index[0]
+        n_samples = len(train_data)
+        
+        # Get raw similarity scores without speed weighting
+        similarity_scores = get_similarity_scores_vectorized(
+            similarity_matrix, song_index, n_samples, use_ram)
+        
+        # Sort by similarity score only
+        sorted_indices = np.argsort([score for _, score in similarity_scores])[::-1][1:top_n+1]
+        
+        # Format recommendations with all required fields
+        recommendations = [
+            (train_data.iloc[idx]['name'],
+             train_data.iloc[idx]['Cluster'],
+             clean_artist_string(train_data.iloc[idx]['artists']),
+             str(train_data.iloc[idx]['spotify_id']))
+            for idx in sorted_indices
+        ]
+        
+        return recommendations
+        
+    except IndexError:
+        raise
+    except Exception as e:
+        raise e
+
 def get_random_songs_by_speed(speed_kmh, y_train, x_train_encoded, top_n=5):
     """Get random songs with cleaned artist info"""
     try:

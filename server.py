@@ -86,7 +86,7 @@ def get_recommendations():
     try:
         data = request.get_json()
         song_name = data.get('song_name')
-        speed = int(data.get('speed', 60))
+        speed = int(data.get('speed', 0))
         n_songs = int(data.get('n_songs', 5))
         CustomMode = bool(data.get('CustomMode', False))
         Mode = int(data.get('Mode', -1))
@@ -134,6 +134,45 @@ def get_recommendations():
                     "id": str(song_id)
                 }
                 for name, cluster, artist, song_id in recommendations
+            ]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/recommend-by-song', methods=['POST'])
+def get_song_recommendations():
+    try:
+        data = request.get_json()
+        song_name = data.get('song_name')
+        n_songs = int(data.get('n_songs', 5))
+        
+        if not song_name:
+            return jsonify({"error": "song_name is required"}), 400
+        
+        try:
+            recommendations = flt16.recommend_songs_vanilla(
+                song_name,
+                x_train_encoded,
+                y_train,
+                similarity_matrix,
+                top_n=n_songs
+            )
+        except IndexError as idx_err:
+            return jsonify({
+                "error": "Track not found in the dataset"
+            }), 404
+        
+        return jsonify({
+            "song": song_name,
+            "recommendation_type": "similarity",
+            "recommendations": [
+                {
+                    "name": str(name),
+                    "cluster": int(cluster),
+                    "artist": artist,
+                    "id": str(spotify_id)
+                }
+                for name, cluster, artist, spotify_id in recommendations
             ]
         })
     except Exception as e:
