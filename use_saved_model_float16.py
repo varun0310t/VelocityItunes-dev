@@ -270,38 +270,67 @@ def main():
 
         while True:
             try:
-                idx = int(input("\nEnter the index of a song to recommend (or -1 to exit): "))
-                if idx == -1:
-                    break
-                query_song = y_train.iloc[idx]['name']
-            except:
-                print("Invalid input. Using default song at index 0.")
-                query_song = y_train.iloc[0]['name']
-
-            speed = float(input("Enter current speed in km/h: "))
-
-            start_time = time.time()
-            recommendations, proc_time = recommend_songs(
-                query_song, x_train_encoded, y_train,
-                similarity_matrix, speed_kmh=speed, use_ram=use_ram
-            )
-            random_recommendation = sr.random_recommendation_by_speed(
-                speed, y_train, x_train_encoded
-            )
-            total_time = time.time() - start_time
-            
-            print(f"\nRecommended songs for '{query_song}' at {speed} km/h:")
-            print(f"Processing time: {proc_time:.3f} seconds")
-            print(f"Total response time: {total_time:.3f} seconds")
-            
-            for song, cluster in recommendations:
-                print(f"- {song} (Cluster {cluster})")
+                print("\nSelect recommendation type:")
+                print("1. Speed-based recommendations")
+                print("2. Pure similarity recommendations")
+                print("3. Random by speed")
+                print("0. Exit")
                 
-            print("\nRandom recommendations:")
-            for song in random_recommendation:
-                print(f"- {song}")
+                choice = int(input("Enter your choice (0-3): "))
+                
+                if choice == 0:
+                    break
+                    
+                if choice in [1, 2]:
+                    query_song = input("Enter song name: ")
+                
+                if choice == 1:
+                    speed = float(input("Enter speed in km/h: "))
+                    custom = input("Use custom mode? (y/n): ").lower() == 'y'
+                    mode = int(input("Enter mode (0-3) if custom: ")) if custom else -1
+                    
+                    recommendations = recommend_songs(
+                        query_song, x_train_encoded, y_train,
+                        similarity_matrix, speed_kmh=speed, 
+                        use_ram=use_ram, CustomMode=custom, Mode=mode
+                    )
+                    
+                    print(f"\nRecommendations for '{query_song}' at {speed} km/h:")
+                    for name, cluster, artists, spotify_id in recommendations:
+                        print(f"- {name} (Cluster {cluster})")
+                        print(f"  Artists: {artists}")
+                        print(f"  ID: {spotify_id}")
+                
+                elif choice == 2:
+                    recommendations = recommend_songs_vanilla(
+                        query_song, x_train_encoded, y_train,
+                        similarity_matrix, use_ram=use_ram
+                    )
+                    
+                    print(f"\nPure similarity recommendations for '{query_song}':")
+                    for name, cluster, artists, spotify_id in recommendations:
+                        print(f"- {name} (Cluster {cluster})")
+                        print(f"  Artists: {artists}")
+                        print(f"  ID: {spotify_id}")
+                
+                elif choice == 3:
+                    speed = float(input("Enter speed in km/h: "))
+                    recommendations = get_random_songs_by_speed(
+                        speed, y_train, x_train_encoded
+                    )
+                    
+                    print(f"\nRandom recommendations for {speed} km/h:")
+                    for name, cluster, artists, spotify_id in recommendations:
+                        print(f"- {name} (Cluster {cluster})")
+                        print(f"  Artists: {artists}")
+                        print(f"  ID: {spotify_id}")
+                
+            except Exception as e:
+                print(f"Error: {str(e)}")
+                continue
     else:
         print("No model components available. Please ensure saved files exist.")
 
 if __name__ == "__main__":
     main()
+
