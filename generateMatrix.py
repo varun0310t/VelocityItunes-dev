@@ -386,7 +386,7 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
     
     # Copy similarity matrix file instead of loading it
     import shutil
-    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npz")
+    shutil.copy2(similarity_matrix_file, f"{save_dir}/similarity_matrix.npy")
     
     # Save sklearn models
     joblib.dump(kmeans_model, f"{save_dir}/kmeans_model.joblib")
@@ -398,7 +398,7 @@ def save_model_components(x_train_encoded, y_train, similarity_matrix_file, kmea
 # After training, save all components
 if similarity_matrix is not None:
     # Save components using the file path
-    save_model_components(x_train_encoded, y_train, 'similarity_matrix.npz', kmeans, scaler)
+    save_model_components(x_train_encoded, y_train, 'similarity_matrix.npy', kmeans, scaler)
     
     # Test recommendations
     speeds = [30, 60, 90, 120]
